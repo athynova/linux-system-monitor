@@ -1,0 +1,9 @@
+logs/*
+!logs/.gitkeep
+reports/*
+!reports/.gitkeep
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
