@@ -19,9 +19,10 @@ Run `./tests/run_all.sh` (all five suites), then run `./monitor.sh --interval 1 
 | INT-04 | Full monitoring cycle | Report displayed and saved |
 | INT-05 | Continuous mode | Repeated cycles until Ctrl+C |
 | UT-10 | Process name containing a space | Columns stay aligned (v1.1) |
+| UT-11 | The monitor's own `ps` row | Excluded; `psql` and other names kept (v1.1.1) |
 | CFG-01..23 | Config parsing: CRLF, BOM, spaces, comments, bad/duplicate/unknown keys, range limits, `--help` with broken config | Accepted or rejected with a clear message (`test_config.sh`) |
 | HIS-01..30 | CSV header/rows, ISO timestamps, quoting, validation, trimming, `--show-history`, `HISTORY_ENABLED=false` | See `test_history.sh` |
-| SHD-01..12 | SIGINT exit 130, SIGTERM exit 143, stop logged, CSV intact, prompt stop while sleeping | See `test_shutdown.sh` |
+| SHD-01..15 | SIGINT exit 130, SIGTERM exit 143, stop logged, CSV intact, prompt stop while sleeping | See `test_shutdown.sh` |
 | EDG-01..15 | Foreign/empty/unterminated history file, 5 concurrent writers, unwritable data dir, CPU counter anomalies | See `test_edge_cases.sh` |
 
 ## Results record
@@ -29,11 +30,11 @@ Do not claim target-machine tests passed until you run them on Linux Mint 22.3 a
 
 | Test group | Result |
 |---|---|
-| Automated test suites (`run_all.sh`) | Pending target-machine execution |
-| Manual: history CSV opens in a spreadsheet | Pending target-machine execution |
-| Manual: Ctrl+C in continuous mode | Pending target-machine execution |
-| Full integration run | Pending target-machine execution |
-| Continuous mode | Pending target-machine execution |
+| Automated test suites (`run_all.sh`) | v1.1.0: all 5 suites passed on Linux Mint 22.3 (11 Nov 2026). v1.1.1: re-run pending |
+| Manual: history CSV opens in a spreadsheet | Pending: open `data/history.csv` in LibreOffice Calc and confirm the 6 columns |
+| Manual: Ctrl+C in continuous mode | Passed on Linux Mint 22.3; exit message and history correct. Found a spurious error when Ctrl+C lands during report assembly, fixed in v1.1.1 |
+| Full integration run | Passed on Linux Mint 22.3: report displayed and saved, history row recorded |
+| Continuous mode | Passed on Linux Mint 22.3: repeated cycles until Ctrl+C, 3 history rows written |
 | Report/log inspection | Pending target-machine execution |
 
 ## Additional manual checks

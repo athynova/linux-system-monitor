@@ -1,6 +1,15 @@
 # Changelog
 
-## [1.1.0] - unreleased
+## [1.1.1] - 2026-11-11
+### Fixed
+- Ctrl+C during report assembly printed a spurious `Report content and directory are required` error; a partial report is now never printed or saved.
+- The monitor's own `ps` process (always ~100% CPU) no longer appears in the top-process lists.
+
+### Documentation
+- Graceful-shutdown behaviour described precisely: Ctrl+C after sampling but before the report completes can leave a history row without a report.
+- Test plan records the v1.1 results on Linux Mint 22.3.
+
+## [1.1.0] - 2026-11-11
 ### Added
 - Historical CPU, RAM and disk metrics stored in `data/history.csv` (new `modules/history_manager.sh`).
 - `HISTORY_ENABLED` and `HISTORY_MAX_ROWS` settings; `--show-history N` and `--version` options.
