@@ -43,6 +43,20 @@ timeout --preserve-status -s INT 1 "$APP/monitor.sh" --interval 5 --top 1 > "$OU
 [[ $rc -eq 130 ]] && pass "Ctrl+C during a one-shot run exits with 130" || fail "Ctrl+C during a one-shot run exits with 130 (got $rc)"
 [[ ! -e "$APP/data/history.csv" && ! -e "$APP/reports" ]] && pass "Interrupted cycle writes no partial history or report" || fail "Interrupted cycle writes no partial history or report"
 
+# --- Ctrl+C while the report is being assembled (after sampling finished) ------
+# Deterministic: a test-only system_info.sh sends SIGINT to the whole process
+# group (exactly what Ctrl+C does) from inside the report-building step.
+rm -rf "$APP/data" "$APP/logs" "$APP/reports"
+cp "$APP/modules/system_info.sh" "$SANDBOX/system_info.sh.orig"
+cat > "$APP/modules/system_info.sh" <<'MOD'
+get_system_info() { kill -INT 0; sleep 0.2; echo "Hostname: test"; }
+MOD
+timeout --preserve-status 20 "$APP/monitor.sh" --interval 1 --top 1 > "$OUTF" 2>&1; rc=$?
+cp "$SANDBOX/system_info.sh.orig" "$APP/modules/system_info.sh"
+[[ $rc -eq 130 && "$(<"$OUTF")" == *"Monitor stopped by SIGINT"* ]] && pass "Ctrl+C during report assembly stops cleanly (130)" || fail "Ctrl+C during report assembly stops cleanly (rc=$rc)"
+[[ "$(<"$OUTF")" != *"Report content and directory are required"* ]] && pass "No spurious 'Report content' error on Ctrl+C" || fail "No spurious 'Report content' error on Ctrl+C"
+[[ -z "$(ls -A "$APP/reports" 2>/dev/null)" ]] && pass "No partial report saved when interrupted mid-assembly" || fail "No partial report saved when interrupted mid-assembly"
+
 # --- Normal one-shot run is unaffected ---------------------------------------
 write_conf 'MONITOR_INTERVAL=1\n'
 run_app --interval 1 --top 1
