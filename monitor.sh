@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -uo pipefail
+export LC_NUMERIC=C   # CSV and awk output must always use "." as the decimal separator
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$ROOT/config/monitor.conf"
 LOG_DIR="$ROOT/logs"; REPORT_DIR="$ROOT/reports"; EVENT_LOG="$LOG_DIR/monitor.log"
+DATA_DIR="$ROOT/data"; HISTORY_FILE="$DATA_DIR/history.csv"
 
-for name in system_info cpu_monitor memory_monitor disk_monitor process_monitor alert_manager report_manager; do
+for name in system_info cpu_monitor memory_monitor disk_monitor process_monitor alert_manager report_manager history_manager; do
     f="$ROOT/modules/${name}.sh"
     [[ -r "$f" ]] || { echo "Error: Missing module $f" >&2; exit 1; }
     source "$f"
@@ -18,12 +20,14 @@ Usage: ./monitor.sh [options]
   --mount PATH        Filesystem path to inspect (default /)
   --top NUMBER        Processes per list, 1-20 (default from config)
   --continuous        Repeat using MONITOR_INTERVAL from config
+  --show-history N    Print the last N recorded history rows (1-1000) and exit
   --help              Show this help
 Examples:
   ./monitor.sh
   ./monitor.sh --interval 2 --top 3
   ./monitor.sh --mount /home
   ./monitor.sh --continuous
+  ./monitor.sh --show-history 20
 EOF
 }
 error() { echo "Error: $1" >&2; exit 2; }
@@ -34,6 +38,8 @@ RAM_THRESHOLD=85
 DISK_THRESHOLD=90
 MONITOR_INTERVAL=5
 TOP_PROCESS_COUNT=5
+HISTORY_ENABLED=true
+HISTORY_MAX_ROWS=100000
 
 # Trim leading/trailing whitespace of $1 into TRIMMED (no subshell needed).
 trim() {
@@ -63,6 +69,8 @@ load_config() {
             DISK_THRESHOLD) DISK_THRESHOLD=$value ;;
             MONITOR_INTERVAL) MONITOR_INTERVAL=$value ;;
             TOP_PROCESS_COUNT) TOP_PROCESS_COUNT=$value ;;
+            HISTORY_ENABLED) HISTORY_ENABLED=$value ;;
+            HISTORY_MAX_ROWS) HISTORY_MAX_ROWS=$value ;;
             *) error "Config line $lineno: unknown setting '$key'." ;;
         esac
     done < "$CONFIG"
@@ -75,10 +83,12 @@ validate_config() {
     done
     [[ "$MONITOR_INTERVAL" =~ ^[1-9][0-9]*$ ]] && (( MONITOR_INTERVAL <= 3600 )) || error "MONITOR_INTERVAL must be 1-3600."
     [[ "$TOP_PROCESS_COUNT" =~ ^[1-9][0-9]*$ ]] && (( TOP_PROCESS_COUNT <= 20 )) || error "TOP_PROCESS_COUNT must be 1-20."
+    [[ "$HISTORY_ENABLED" == true || "$HISTORY_ENABLED" == false ]] || error "HISTORY_ENABLED must be true or false."
+    [[ "$HISTORY_MAX_ROWS" =~ ^[1-9][0-9]*$ ]] && (( HISTORY_MAX_ROWS >= 100 && HISTORY_MAX_ROWS <= 1000000 )) || error "HISTORY_MAX_ROWS must be 100-1000000."
 }
 run_cycle() {
     local interval="$1" mount="$2" count="$3" cpu mem disk ram_pct disk_pct report saved status=NORMAL
-    local warning_count=0 rc
+    local warning_count=0 rc history_note=""
     local -a warnings=()
     cpu=$(get_cpu_usage "$interval") || return 1
     mem=$(get_memory_metrics) || return 1
@@ -97,6 +107,16 @@ run_cycle() {
         rc=$?; if ((rc==1)); then warnings+=("DISK ${disk_pct}% >= ${DISK_THRESHOLD}%"); warning_count=$((warning_count+1)); else return "$rc"; fi
     }
     (( warning_count > 0 )) && status=WARNING
+
+    # Record history before building the report so a report failure cannot lose the sample.
+    if [[ "$HISTORY_ENABLED" == true ]]; then
+        if history_append "$HISTORY_FILE" "$cpu" "$ram_pct" "$disk_pct" "$mount" "$status" "$HISTORY_MAX_ROWS"; then
+            history_note="History recorded: $HISTORY_FILE"
+        else
+            echo "Warning: could not record history to $HISTORY_FILE." >&2
+            printf '[%s] WARNING: history write failed (%s).\n' "$(date '+%F %T')" "$HISTORY_FILE" >> "$EVENT_LOG" 2>/dev/null
+        fi
+    fi
 
     report="$(cat <<EOF
 ============================================================
@@ -140,11 +160,12 @@ EOF
     printf '%s\n' "$report"
     saved=$(save_report "$report" "$REPORT_DIR") || return 1
     printf '\nReport saved: %s\n' "$saved"
+    [[ -z "$history_note" ]] || printf '%s\n' "$history_note"
     printf '[%s] Monitoring cycle completed. Status=%s\n' "$(date '+%F %T')" "$status" >> "$EVENT_LOG" ||
         echo "Warning: event log could not be written." >&2
 }
 main() {
-    local interval=1 mount=/ continuous=0 count=""
+    local interval=1 mount=/ continuous=0 count="" show_history=""
     # Arguments are parsed first so --help works even if the config is broken.
     while (($#)); do
         case "$1" in
@@ -153,10 +174,16 @@ main() {
             --mount) (($#>=2)) || error "--mount needs a path"; mount=$2; shift 2 ;;
             --top) (($#>=2)) || error "--top needs a value"; count=$2; shift 2 ;;
             --continuous) continuous=1; shift ;;
+            --show-history) (($#>=2)) || error "--show-history needs a value"; show_history=$2; shift 2 ;;
             *) error "Unknown option: $1 (use --help)" ;;
         esac
     done
     load_config; validate_config
+    if [[ -n "$show_history" ]]; then
+        [[ "$show_history" =~ ^[1-9][0-9]{0,3}$ ]] && ((show_history<=1000)) || error "--show-history must be 1-1000."
+        history_show "$HISTORY_FILE" "$show_history"
+        return $?
+    fi
     [[ -n "$count" ]] || count=$TOP_PROCESS_COUNT
     [[ "$interval" =~ ^[1-9][0-9]*$ ]] && ((interval<=60)) || error "--interval must be 1-60."
     [[ "$count" =~ ^[1-9][0-9]*$ ]] && ((count<=20)) || error "--top must be 1-20."
