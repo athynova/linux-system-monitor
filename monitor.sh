@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-VERSION="1.1.0"
+VERSION="1.1.1"
 export LC_NUMERIC=C   # CSV and awk output must always use "." as the decimal separator
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$ROOT/config/monitor.conf"
@@ -188,6 +188,12 @@ Overall status: ${status}
 ============================================================
 EOF
 )"
+    # Ctrl+C during report assembly kills the substitution above and can leave the
+    # report empty or cut short. Never save or print a partial report: abandon quietly.
+    # (A complete report always ends with the status line and the closing rule.)
+    if [[ "$report" != *"Overall status: ${status}"$'\n'"============================================================" ]]; then
+        return 1
+    fi
     printf '%s\n' "$report"
     saved=$(save_report "$report" "$REPORT_DIR") || return 1
     printf '\nReport saved: %s\n' "$saved"

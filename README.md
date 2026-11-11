@@ -7,7 +7,7 @@ A modular, local Linux command-line monitor written in GNU Bash. It collects CPU
 - **CSV storage:** structured, spreadsheet-friendly rows with ISO 8601 timestamps; size bounded by `HISTORY_MAX_ROWS`.
 - **Graceful shutdown:** Ctrl+C and `kill` stop the monitor cleanly, log the stop, and leave no half-written data.
 - **Configuration validation:** whitespace, CRLF line endings, comments, duplicate/unknown keys and out-of-range values are handled with line-numbered errors; `--help` works even with a broken config.
-- **Bug fix:** process tables stay aligned for command names containing spaces (e.g. `Web Content`).
+- **Bug fixes:** process tables stay aligned for command names containing spaces (e.g. `Web Content`); the monitor's own `ps` process no longer appears at the top of the CPU list; Ctrl+C never produces a partial report or a spurious error (v1.1.1).
 - **Testing:** five automated suites plus `tests/run_all.sh`.
 
 ## Version 1.0 scope
@@ -81,7 +81,7 @@ timestamp,cpu_percent,ram_percent,disk_percent,mount,status
 - `data/` contents are gitignored; back up or export the CSV yourself if you need it kept.
 
 ## Graceful shutdown
-`Ctrl+C` (SIGINT) and `kill <pid>` (SIGTERM) stop the monitor cleanly: the program reports how many cycles completed, writes a "Monitor stopped" line to `logs/monitor.log`, and exits with status 130 (INT) or 143 (TERM). Reports and history are written only at the end of a cycle, and trimming uses an atomic rename, so an interruption never leaves a half-written file. A cycle interrupted by Ctrl+C is discarded; a cycle interrupted by SIGTERM is allowed to finish first.
+`Ctrl+C` (SIGINT) and `kill <pid>` (SIGTERM) stop the monitor cleanly: the program reports how many cycles completed, writes a "Monitor stopped" line to `logs/monitor.log`, and exits with status 130 (INT) or 143 (TERM). Reports are written only when complete and history trimming uses an atomic rename, so an interruption never leaves a half-written file. Ctrl+C during CPU sampling discards the cycle. Ctrl+C after sampling has finished but before the report is complete discards the report, but the history row for that cycle (a valid measurement) may already be recorded. A `kill` (SIGTERM) lets the running cycle finish first.
 
 ## Test
 ```bash
