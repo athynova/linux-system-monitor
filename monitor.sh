@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
+VERSION="1.1.0"
 export LC_NUMERIC=C   # CSV and awk output must always use "." as the decimal separator
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$ROOT/config/monitor.conf"
@@ -22,6 +23,7 @@ Usage: ./monitor.sh [options]
   --continuous        Repeat using MONITOR_INTERVAL from config
   --show-history N    Print the last N recorded history rows (1-1000) and exit
   --help              Show this help
+  --version           Show the version
 Examples:
   ./monitor.sh
   ./monitor.sh --interval 2 --top 3
@@ -199,6 +201,7 @@ main() {
     while (($#)); do
         case "$1" in
             --help) usage; return 0 ;;
+            --version) echo "Linux System Monitoring Tool $VERSION"; return 0 ;;
             --interval) (($#>=2)) || error "--interval needs a value"; interval=$2; shift 2 ;;
             --mount) (($#>=2)) || error "--mount needs a path"; mount=$2; shift 2 ;;
             --top) (($#>=2)) || error "--top needs a value"; count=$2; shift 2 ;;

@@ -46,4 +46,7 @@ rm -f "$APP/config/monitor.conf"
 run_app --help
 [[ $RC -eq 0 && "$OUT" == *"Usage:"* ]] && pass "--help works with no config file" || fail "--help works with no config file"
 
+run_app --version
+[[ $RC -eq 0 && "$OUT" == "Linux System Monitoring Tool "* ]] && pass "--version prints the version" || fail "--version prints the version"
+
 finish
