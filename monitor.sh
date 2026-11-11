@@ -35,20 +35,35 @@ DISK_THRESHOLD=90
 MONITOR_INTERVAL=5
 TOP_PROCESS_COUNT=5
 
+# Trim leading/trailing whitespace of $1 into TRIMMED (no subshell needed).
+trim() {
+    TRIMMED=$1
+    TRIMMED=${TRIMMED#"${TRIMMED%%[![:space:]]*}"}
+    TRIMMED=${TRIMMED%"${TRIMMED##*[![:space:]]}"}
+}
 load_config() {
-    local line key value
-    [[ -r "$CONFIG" ]] || error "Configuration missing or unreadable."
+    local line key value lineno=0 seen=" "
+    [[ -r "$CONFIG" ]] || error "Configuration missing or unreadable: $CONFIG"
     while IFS= read -r line || [[ -n "$line" ]]; do
+        lineno=$((lineno+1))
+        line=${line//$'\r'/}                      # tolerate Windows line endings
+        ((lineno==1)) && line=${line#$'\xef\xbb\xbf'}  # tolerate a UTF-8 BOM
+        trim "$line"; line=$TRIMMED
         [[ -z "$line" || "$line" == \#* ]] && continue
-        [[ "$line" == *=* ]] || error "Malformed configuration line."
+        [[ "$line" == *=* ]] || error "Config line $lineno is malformed (expected KEY=VALUE)."
         key=${line%%=*}; value=${line#*=}
+        trim "$key"; key=$TRIMMED
+        value=${value%%[[:space:]]#*}               # allow a trailing "# comment"
+        trim "$value"; value=$TRIMMED
+        [[ "$seen" == *" $key "* ]] && error "Config line $lineno: duplicate setting $key."
+        seen+="$key "
         case "$key" in
             CPU_THRESHOLD) CPU_THRESHOLD=$value ;;
             RAM_THRESHOLD) RAM_THRESHOLD=$value ;;
             DISK_THRESHOLD) DISK_THRESHOLD=$value ;;
             MONITOR_INTERVAL) MONITOR_INTERVAL=$value ;;
             TOP_PROCESS_COUNT) TOP_PROCESS_COUNT=$value ;;
-            *) error "Unknown setting: $key" ;;
+            *) error "Config line $lineno: unknown setting '$key'." ;;
         esac
     done < "$CONFIG"
 }
@@ -129,9 +144,8 @@ EOF
         echo "Warning: event log could not be written." >&2
 }
 main() {
-    local interval=1 mount=/ continuous=0 count
-    load_config; validate_config
-    count=$TOP_PROCESS_COUNT
+    local interval=1 mount=/ continuous=0 count=""
+    # Arguments are parsed first so --help works even if the config is broken.
     while (($#)); do
         case "$1" in
             --help) usage; return 0 ;;
@@ -142,6 +156,8 @@ main() {
             *) error "Unknown option: $1 (use --help)" ;;
         esac
     done
+    load_config; validate_config
+    [[ -n "$count" ]] || count=$TOP_PROCESS_COUNT
     [[ "$interval" =~ ^[1-9][0-9]*$ ]] && ((interval<=60)) || error "--interval must be 1-60."
     [[ "$count" =~ ^[1-9][0-9]*$ ]] && ((count<=20)) || error "--top must be 1-20."
     [[ -d "$mount" ]] || error "Mount path is not an accessible directory: $mount"
