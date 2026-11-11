@@ -86,6 +86,35 @@ validate_config() {
     [[ "$HISTORY_ENABLED" == true || "$HISTORY_ENABLED" == false ]] || error "HISTORY_ENABLED must be true or false."
     [[ "$HISTORY_MAX_ROWS" =~ ^[1-9][0-9]*$ ]] && (( HISTORY_MAX_ROWS >= 100 && HISTORY_MAX_ROWS <= 1000000 )) || error "HISTORY_MAX_ROWS must be 100-1000000."
 }
+# ---- Graceful shutdown ------------------------------------------------------
+# SIGINT (Ctrl+C) and SIGTERM only set a flag; the main loop stops at a safe
+# point, logs the stop, and exits with 130 (INT) or 143 (TERM).
+SHUTDOWN_SIGNAL=""
+CYCLES_COMPLETED=0
+on_signal() { SHUTDOWN_SIGNAL=$1; }
+stop_requested() { [[ -n "$SHUTDOWN_SIGNAL" ]]; }
+cleanup() { rm -f -- "${HISTORY_FILE}.tmp.$$" 2>/dev/null; }
+graceful_stop() {
+    local code=130
+    [[ "$SHUTDOWN_SIGNAL" == TERM ]] && code=143
+    printf '\nMonitor stopped by SIG%s after %d completed cycle(s).\n' "$SHUTDOWN_SIGNAL" "$CYCLES_COMPLETED" >&2
+    mkdir -p "$LOG_DIR" 2>/dev/null
+    printf '[%s] Monitor stopped by SIG%s. Cycles completed=%d\n' "$(date '+%F %T')" "$SHUTDOWN_SIGNAL" "$CYCLES_COMPLETED" >> "$EVENT_LOG" 2>/dev/null
+    exit "$code"
+}
+# Sleep that a signal can interrupt immediately (plain "sleep" would delay the trap).
+interruptible_sleep() {
+    local pid
+    sleep "$1" & pid=$!
+    wait "$pid" 2>/dev/null
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    return 0
+}
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
+trap cleanup EXIT
+
 run_cycle() {
     local interval="$1" mount="$2" count="$3" cpu mem disk ram_pct disk_pct report saved status=NORMAL
     local warning_count=0 rc history_note=""
@@ -165,7 +194,7 @@ EOF
         echo "Warning: event log could not be written." >&2
 }
 main() {
-    local interval=1 mount=/ continuous=0 count="" show_history=""
+    local interval=1 mount=/ continuous=0 count="" show_history="" rc=0
     # Arguments are parsed first so --help works even if the config is broken.
     while (($#)); do
         case "$1" in
@@ -190,11 +219,20 @@ main() {
     [[ -d "$mount" ]] || error "Mount path is not an accessible directory: $mount"
     if ((continuous)); then
         while true; do
-            run_cycle "$interval" "$mount" "$count" || echo "Monitoring cycle failed; retrying in ${MONITOR_INTERVAL}s." >&2
-            sleep "$MONITOR_INTERVAL"
+            if run_cycle "$interval" "$mount" "$count"; then
+                CYCLES_COMPLETED=$((CYCLES_COMPLETED+1))
+            elif ! stop_requested; then
+                echo "Monitoring cycle failed; retrying in ${MONITOR_INTERVAL}s." >&2
+            fi
+            stop_requested && graceful_stop
+            interruptible_sleep "$MONITOR_INTERVAL"
+            stop_requested && graceful_stop
         done
     else
-        run_cycle "$interval" "$mount" "$count"
+        run_cycle "$interval" "$mount" "$count"; rc=$?
+        ((rc==0)) && CYCLES_COMPLETED=1
+        stop_requested && graceful_stop
+        return "$rc"
     fi
 }
 main "$@"
