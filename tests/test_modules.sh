@@ -15,6 +15,12 @@ get_disk_metrics /no-such-mount-for-monitor-test >/dev/null 2>&1
 rc=$?; [[ $rc -eq 2 ]] && pass "Invalid mount rejected" || fail "Invalid mount exit status"
 source "$ROOT/modules/process_monitor.sh"
 get_top_cpu_processes 3 | awk 'NR>1{n++} END{exit !(n>0 && n<=3)}' && pass "CPU process limit" || fail "CPU process limit"
+# Regression: command names containing spaces must not shift the numeric columns.
+rows=$(printf '%s\n' "  101  55.0  4.0 Web Content" "  102   1.0  0.1 bash" | format_process_rows)
+echo "$rows" | awk 'NR==2 {exit !($1==101 && $2=="Web" && $3=="Content" && $4=="55.0" && $5=="4.0")}' \
+    && pass "Spaced command name keeps columns" || fail "Spaced command name keeps columns"
+echo "$rows" | awk 'NR==3 {exit !($1==102 && $2=="bash" && $3=="1.0" && $4=="0.1")}' \
+    && pass "Plain command name keeps columns" || fail "Plain command name keeps columns"
 get_top_memory_processes abc >/dev/null 2>&1
 rc=$?; [[ $rc -eq 2 ]] && pass "Invalid process count rejected" || fail "Invalid process count exit status"
 source "$ROOT/modules/alert_manager.sh"
