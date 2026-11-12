@@ -3,6 +3,7 @@
 # Plain ANSI escape codes only: no ncurses, no tput, no extra packages.
 
 TERM_ACTIVE=0              # 1 while the dashboard owns the screen
+TERM_STTY=""              # tty settings saved by term_enter, restored by term_leave
 TERM_ROWS=24; TERM_COLS=80
 USE_COLOR=1                # the dashboard sets this to 0 for --no-color
 TERM_MIN_COLS=60; TERM_MIN_ROWS=18
@@ -50,6 +51,7 @@ paint() {
 # term_enter: switch to the alternate screen, hide the cursor, stop line wrapping.
 term_enter() {
     (( TERM_ACTIVE )) && return 0
+    if [[ -t 0 ]]; then TERM_STTY=$(stty -g 2>/dev/null) && stty -echo 2>/dev/null; fi
     printf '\e[?1049h\e[?25l\e[?7l\e[2J\e[H'
     TERM_ACTIVE=1
 }
@@ -58,6 +60,8 @@ term_enter() {
 term_leave() {
     (( TERM_ACTIVE )) || return 0
     printf '\e[0m\e[?7h\e[?25h\e[?1049l'
+    [[ -n "$TERM_STTY" ]] && stty "$TERM_STTY" 2>/dev/null
+    TERM_STTY=""
     TERM_ACTIVE=0
 }
 
