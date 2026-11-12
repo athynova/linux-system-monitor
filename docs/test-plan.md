@@ -30,7 +30,7 @@ Do not claim target-machine tests passed until you run them on Linux Mint 22.3 a
 
 | Test group | Result |
 |---|---|
-| Automated test suites (`run_all.sh`) | v1.1.0: all 5 suites passed on Linux Mint 22.3 (11 Nov 2026). v1.1.1: re-run pending |
+| Automated test suites (`run_all.sh`) | v1.1.0: all 5 suites passed on Linux Mint 22.3 (11 Nov 2026). v1.1.1: 1 failure on Mint (`CPU process limit`, SIGPIPE on a busy process table), fixed in v1.1.2. v1.1.2: re-run pending |
 | Manual: history CSV opens in a spreadsheet | Pending: open `data/history.csv` in LibreOffice Calc and confirm the 6 columns |
 | Manual: Ctrl+C in continuous mode | Passed on Linux Mint 22.3; exit message and history correct. Found a spurious error when Ctrl+C lands during report assembly, fixed in v1.1.1 |
 | Full integration run | Passed on Linux Mint 22.3: report displayed and saved, history row recorded |
