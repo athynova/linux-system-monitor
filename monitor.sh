@@ -7,7 +7,7 @@ CONFIG="$ROOT/config/monitor.conf"
 LOG_DIR="$ROOT/logs"; REPORT_DIR="$ROOT/reports"; EVENT_LOG="$LOG_DIR/monitor.log"
 DATA_DIR="$ROOT/data"; HISTORY_FILE="$DATA_DIR/history.csv"
 
-for name in system_info cpu_monitor memory_monitor disk_monitor process_monitor alert_manager report_manager history_manager; do
+for name in system_info cpu_monitor memory_monitor disk_monitor process_monitor alert_manager report_manager history_manager terminal; do
     f="$ROOT/modules/${name}.sh"
     [[ -r "$f" ]] || { echo "Error: Missing module $f" >&2; exit 1; }
     source "$f"
@@ -95,7 +95,7 @@ SHUTDOWN_SIGNAL=""
 CYCLES_COMPLETED=0
 on_signal() { SHUTDOWN_SIGNAL=$1; }
 stop_requested() { [[ -n "$SHUTDOWN_SIGNAL" ]]; }
-cleanup() { rm -f -- "${HISTORY_FILE}.tmp.$$" 2>/dev/null; }
+cleanup() { term_leave 2>/dev/null; rm -f -- "${HISTORY_FILE}.tmp.$$" 2>/dev/null; }
 graceful_stop() {
     local code=130
     [[ "$SHUTDOWN_SIGNAL" == TERM ]] && code=143
