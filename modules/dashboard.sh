@@ -12,6 +12,10 @@ DASH_HOST=localhost
 DASH_STATE=LIVE
 declare -a DASH_CPU_HIST=() DASH_RAM_HIST=()
 declare -a DASH_ALERTS=()
+declare -a DASH_DISKS=()      # "mount<TAB>percent<TAB>used_kib<TAB>total_kib"
+declare -a DASH_PROCS=()      # "pid cpu mem command..."
+DASH_SORT=cpu                 # cpu | mem
+DASH_N_DISKS=0; DASH_N_PROCS=5
 
 # ---- pure rendering helpers ---------------------------------------------------------
 
@@ -57,6 +61,15 @@ dash_rule() {
     printf '%s' "${out// /$ch}"
 }
 
+# dash_trunc_left TEXT WIDTH -> TEXT, or "..." plus its tail when too long (paths matter at the end)
+dash_trunc_left() {
+    local t=$1 w=$2
+    if (( ${#t} <= w )); then printf '%s' "$t"
+    elif (( w > 3 )); then printf '...%s' "${t: -$((w - 3))}"
+    else printf '%s' "${t: -w}"
+    fi
+}
+
 # dash_push ARRAY_NAME VALUE -> append and keep only the newest DASH_HISTORY_MAX values
 dash_push() {
     local -n _dash_arr=$1          # unusual name: a caller's own variable can never clash with it
@@ -90,13 +103,54 @@ dash_sample_mem() {
     done <<< "$out"
 }
 
+# dash_sample_disks: real filesystems only, one row per device (bind mounts and
+# btrfs subvolumes would otherwise repeat), zero-size entries dropped.
+dash_sample_disks() {
+    local dev mount total used pct
+    local -A seen=()
+    DASH_DISKS=()
+    while IFS=$'\t' read -r dev mount total used pct; do
+        [[ -n "${seen[$dev]:-}" ]] && continue
+        seen[$dev]=1
+        [[ "$pct" =~ ^[0-9]+$ ]] || pct=0
+        DASH_DISKS+=("${mount}"$'\t'"${pct}"$'\t'"${used}"$'\t'"${total}")
+    done < <(df -PkT -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs -x ramfs 2>/dev/null |
+        awk 'NR > 1 && $3 + 0 > 0 { m = $7; for (i = 8; i <= NF; i++) m = m " " $i; p = $6; sub(/%/, "", p);
+             printf "%s\t%s\t%s\t%s\t%s\n", $1, m, $3, $4, p }')
+}
+
+# dash_layout: split the spare rows between the disk and process panels
+dash_layout() {
+    local avail=$(( TERM_ROWS - 12 )) nd=${#DASH_DISKS[@]} lines
+    (( avail < 4 )) && avail=4
+    DASH_N_DISKS=$nd
+    (( DASH_N_DISKS > 4 )) && DASH_N_DISKS=4
+    (( DASH_N_DISKS > avail - 3 )) && DASH_N_DISKS=$(( avail - 3 ))
+    lines=$DASH_N_DISKS; (( lines < 1 )) && lines=1          # "no filesystems" still uses a row
+    DASH_N_PROCS=$(( avail - lines )); (( DASH_N_PROCS > 15 )) && DASH_N_PROCS=15
+}
+
+# dash_sample_procs: top DASH_N_PROCS processes by the current sort key
+dash_sample_procs() {
+    local key='-%cpu'
+    [[ $DASH_SORT == mem ]] && key='-%mem'
+    DASH_PROCS=()
+    mapfile -t DASH_PROCS < <(ps -eo pid=,%cpu=,%mem=,comm= --sort="$key" 2>/dev/null | select_process_rows "$DASH_N_PROCS")
+}
+
 # dash_sample: take one sample of everything and update histories and alerts
 dash_sample() {
-    dash_sample_cpu; dash_sample_mem
+    local row mount pct
+    dash_sample_cpu; dash_sample_mem; dash_sample_disks
+    dash_layout; dash_sample_procs
     dash_push DASH_CPU_HIST "$DASH_CPU"; dash_push DASH_RAM_HIST "$DASH_RAM"
     DASH_ALERTS=()
     [[ $(dash_level "$DASH_CPU" "$CPU_THRESHOLD") == crit ]] && DASH_ALERTS+=("CPU ${DASH_CPU}% >= ${CPU_THRESHOLD}%")
     [[ $(dash_level "$DASH_RAM" "$RAM_THRESHOLD") == crit ]] && DASH_ALERTS+=("RAM ${DASH_RAM}% >= ${RAM_THRESHOLD}%")
+    for row in "${DASH_DISKS[@]}"; do
+        IFS=$'\t' read -r mount pct _ <<< "$row"
+        [[ $(dash_level "$pct" "$DISK_THRESHOLD") == crit ]] && DASH_ALERTS+=("DISK ${mount} ${pct}% >= ${DISK_THRESHOLD}%")
+    done
     return 0
 }
 
@@ -134,6 +188,32 @@ dash_section_ram() {
     dash_meter RAM "$DASH_RAM" "$RAM_THRESHOLD" "  $(dash_gib "$DASH_MEM_USED")/$(dash_gib "$DASH_MEM_TOTAL") GiB" DASH_RAM_HIST "$1"
 }
 
+dash_section_disks() {
+    local w=$1 i row mount pct used total level suffix bw
+    printf ' %s\n' "$(paint bold "DISKS")"
+    if (( ${#DASH_DISKS[@]} == 0 )); then printf ' %s\n' "$(paint dim "(no filesystems found)")"; return; fi
+    for ((i = 0; i < DASH_N_DISKS; i++)); do
+        IFS=$'\t' read -r mount pct used total <<< "${DASH_DISKS[i]}"
+        level=$(dash_level "$pct" "$DISK_THRESHOLD")
+        printf -v suffix ' %3d%%  %s/%s GiB' "$pct" "$(dash_gib "$used")" "$(dash_gib "$total")"
+        printf -v suffix '%-26s' "$suffix"
+        bw=$(( w - 18 - ${#suffix} )); (( bw < 8 )) && bw=8
+        printf ' %-14s [%s]%s\n' "$(dash_trunc_left "$mount" 14)" "$(dash_bar "$pct" "$bw" "$level")" "$(paint "$level" "$suffix")"
+    done
+}
+
+dash_section_procs() {
+    local w=$1 cw=$(( $1 - 24 )) row pid cpu mem comm cpuh='CPU%' memh='MEM%'
+    (( cw > 30 )) && cw=30; (( cw < 8 )) && cw=8
+    [[ $DASH_SORT == mem ]] && memh='MEM%v' || cpuh='CPU%v'
+    printf ' %s\n' "$(paint bold "PROCESSES  (sorted by ${DASH_SORT^^})")"
+    printf ' %s\n' "$(paint dim "$(printf '%-8s %-*s %6s %6s' PID "$cw" COMMAND "$cpuh" "$memh")")"
+    for row in "${DASH_PROCS[@]}"; do
+        read -r pid cpu mem comm <<< "$row"
+        printf ' %-8s %-*.*s %6s %6s\n' "$pid" "$cw" "$cw" "$comm" "$cpu" "$mem"
+    done
+}
+
 dash_section_footer() {
     local w=$1 status
     if (( ${#DASH_ALERTS[@]} )); then
@@ -152,6 +232,8 @@ dash_build_frame() {
     dash_section_header "$w"
     dash_section_cpu "$w"
     dash_section_ram "$w"
+    dash_section_disks "$w"
+    dash_section_procs "$w"
     dash_section_footer "$w"
 }
 

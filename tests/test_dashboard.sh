@@ -4,8 +4,8 @@ set -uo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 make_sandbox
 export LC_ALL=C LC_NUMERIC=C           # ASCII glyphs and "." decimals make exact comparisons possible
-VERSION=test; CPU_THRESHOLD=80; RAM_THRESHOLD=85
-for m in cpu_monitor memory_monitor terminal dashboard; do source "$TEST_ROOT/modules/$m.sh"; done
+VERSION=test; CPU_THRESHOLD=80; RAM_THRESHOLD=85; DISK_THRESHOLD=90
+for m in cpu_monitor memory_monitor process_monitor terminal dashboard; do source "$TEST_ROOT/modules/$m.sh"; done
 USE_COLOR=0; unset NO_COLOR            # after sourcing: terminal.sh sets its own default
 eq() { [[ "$1" == "$2" ]] && pass "$3" || fail "$3 (got '$1', expected '$2')"; }
 
@@ -80,6 +80,87 @@ dash_sample_cpu() { DASH_CPU=5.00; }; dash_sample; frame=$(dash_build_frame)
 DASH_ALERTS=("CPU 95% >= 80%"); ( USE_COLOR=1; unset NO_COLOR; [[ "$(dash_build_frame)" == *$'\e[31m'* ]] ) && pass "frame uses colour when enabled" || fail "frame uses colour when enabled"
 bars=$(dash_build_frame | grep -E '^ (CPU|RAM) ' | awk '{ print index($0, "]") }' | sort -u | wc -l)
 [[ $bars -eq 1 ]] && pass "CPU and RAM bars line up" || fail "CPU and RAM bars line up"
+
+# --- disks, processes and layout (fake df and ps, so results are exact) ---------------
+mkdir -p "$SANDBOX/bin"
+cat > "$SANDBOX/bin/df" <<'EOS'
+#!/bin/sh
+cat <<'DF'
+Filesystem     Type  1K-blocks      Used Available Use% Mounted on
+/dev/sda2      ext4  244529152 124469248 107547136  54% /
+/dev/sda1      vfat     523248      6220    517028   2% /boot/efi
+/dev/sdb1      ext4  100000000  50000000  50000000  50% /media/my usb
+/dev/sda2      ext4  244529152 124469248 107547136  54% /var/lib/snapshot
+nofs           fuse          0         0         0    - /zero
+DF
+EOS
+cat > "$SANDBOX/bin/ps" <<'EOS'
+#!/bin/sh
+case "$*" in
+  *sort=-%mem*) cat <<'PS'
+  300  1.0 30.0 firefox
+  200  9.0 20.0 Web Content
+  100  0.5  1.0 bash
+  999 100.0  0.0 ps
+PS
+  ;;
+  *) cat <<'PS'
+  200 90.0 20.0 Web Content
+  300 80.0 30.0 firefox
+  999 100.0  0.0 ps
+  100  0.5  1.0 bash
+PS
+  ;;
+esac
+EOS
+chmod +x "$SANDBOX/bin/df" "$SANDBOX/bin/ps"
+SAVED_PATH=$PATH; PATH="$SANDBOX/bin:$PATH"
+
+dash_sample_disks
+eq "${#DASH_DISKS[@]}" 3 "disks: duplicate device and zero-size entry dropped"
+IFS=$'\t' read -r m p u t <<< "${DASH_DISKS[0]}"; eq "$m|$p|$u|$t" "/|54|124469248|244529152" "disks: first row parsed"
+IFS=$'\t' read -r m p u t <<< "${DASH_DISKS[2]}"; eq "$m|$p" "/media/my usb|50" "disks: mount point with a space kept whole"
+
+eq "$(dash_trunc_left /media/usb/long/path 10)" "...ng/path" "trunc_left: keeps the end of a long path"
+eq "$(dash_trunc_left /home 14)" "/home" "trunc_left: short text unchanged"
+
+TERM_ROWS=24; dash_layout; eq "$DASH_N_DISKS/$DASH_N_PROCS" "3/9"  "layout 24 rows, 3 disks: 3 disk rows, 9 process rows"
+DASH_DISKS=(a b c d e f); TERM_ROWS=18; dash_layout; eq "$DASH_N_DISKS/$DASH_N_PROCS" "3/3" "layout 18 rows, 6 disks: disks capped so 3 process rows remain"
+TERM_ROWS=40; dash_layout; eq "$DASH_N_DISKS/$DASH_N_PROCS" "4/15" "layout 40 rows: at most 4 disks and 15 processes"
+DASH_DISKS=(); TERM_ROWS=24; dash_layout; eq "$DASH_N_DISKS/$DASH_N_PROCS" "0/11" "layout with no disks: one row reserved for the message"
+dash_sample_disks
+
+DASH_N_PROCS=3; DASH_SORT=cpu; dash_sample_procs
+eq "${#DASH_PROCS[@]}" 3 "procs: limited to N rows"
+[[ "${DASH_PROCS[0]}" == *"Web Content" && "${DASH_PROCS[1]}" == *firefox && "${DASH_PROCS[*]}" != *" ps"* ]] \
+    && pass "procs: CPU order, own ps row excluded" || fail "procs: CPU order, own ps row excluded"
+DASH_SORT=mem; dash_sample_procs
+[[ "${DASH_PROCS[0]}" == *firefox && "${DASH_PROCS[1]}" == *"Web Content" ]] && pass "procs: memory order" || fail "procs: memory order"
+
+TERM_COLS=80; TERM_ROWS=24; DASH_SORT=cpu; dash_layout; dash_sample_procs
+sec=$(dash_section_procs 79)
+[[ "$sec" == *"sorted by CPU"* && "$sec" == *"CPU%v"* && "$sec" == *"Web Content"* ]] && pass "procs panel: CPU marker and spaced name intact" || fail "procs panel: CPU marker and spaced name intact"
+DASH_SORT=mem; dash_sample_procs; sec=$(dash_section_procs 79)
+[[ "$sec" == *"sorted by MEM"* && "$sec" == *"MEM%v"* && "$sec" != *"CPU%v"* ]] && pass "procs panel: MEM marker" || fail "procs panel: MEM marker"
+row=$(dash_section_procs 79 | grep firefox); eq "$(awk '{print $1, $(NF-1), $NF}' <<< "$row")" "300 1.0 30.0" "procs panel: PID, CPU and MEM columns line up with the command"
+
+sec=$(dash_section_disks 79)
+[[ "$sec" == *" /  "*"54%"* && "$sec" == *"/media/my usb"*"50%"* && "$sec" == *"DISKS"* ]] && pass "disks panel: rows with bar and percentage" || fail "disks panel: rows with bar and percentage"
+DASH_DISKS=(); [[ "$(dash_section_disks 79)" == *"no filesystems found"* ]] && pass "disks panel: message when none found" || fail "disks panel: message when none found"
+
+DISK_THRESHOLD=52; dash_sample_cpu() { DASH_CPU=1.00; }; dash_sample_mem() { DASH_RAM=1.00; DASH_MEM_TOTAL=8000000; DASH_MEM_USED=80000; }
+DASH_CPU_HIST=(); DASH_RAM_HIST=(); DASH_SORT=cpu; dash_sample
+[[ ${#DASH_ALERTS[@]} -eq 1 && "${DASH_ALERTS[0]}" == "DISK / 54% >= 52%" ]] && pass "alerts: only the disk over its threshold is reported" || fail "alerts: only the disk over its threshold is reported (${DASH_ALERTS[*]})"
+DISK_THRESHOLD=90
+
+bad=0
+for rows in 18 24 40; do for cols in 60 80 140; do
+    TERM_ROWS=$rows; TERM_COLS=$cols; dash_sample
+    out=$(dash_build_frame); n=$(wc -l <<< "$out"); maxw=$(awk '{ if (length($0) > m) m = length($0) } END { print m }' <<< "$out")
+    (( n <= rows && maxw <= cols - 1 )) || { bad=1; echo "  too big at ${cols}x${rows}: $n lines, width $maxw"; }
+done; done
+(( bad == 0 )) && pass "frame fits every size from 60x18 to 140x40 (no wrapping, no scrolling)" || fail "frame fits every size from 60x18 to 140x40"
+PATH=$SAVED_PATH
 
 # --- command line (real monitor.sh in the sandbox) --------------------------------
 write_conf 'MONITOR_INTERVAL=1\n'
