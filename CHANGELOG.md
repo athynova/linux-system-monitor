@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2] - 2026-11-11
+### Fixed
+- On a busy system (hundreds of processes) the top-process pipeline was killed by SIGPIPE and reported as failed under `pipefail`; the `CPU process limit` test failed on Linux Mint 22.3. The pipeline now reads all `ps` output (regression introduced in v1.1.1).
+
+### Testing
+- New regression test feeds 5000 synthetic process rows through the pipeline under `pipefail`.
+
 ## [1.1.1] - 2026-11-11
 ### Fixed
 - Ctrl+C during report assembly printed a spurious `Report content and directory are required` error; a partial report is now never printed or saved.

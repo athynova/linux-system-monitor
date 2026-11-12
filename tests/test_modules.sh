@@ -22,8 +22,14 @@ echo "$rows" | awk 'NR==2 {exit !($1==101 && $2=="Web" && $3=="Content" && $4=="
 echo "$rows" | awk 'NR==3 {exit !($1==102 && $2=="bash" && $3=="1.0" && $4=="0.1")}' \
     && pass "Plain command name keeps columns" || fail "Plain command name keeps columns"
 # The monitor's own "ps" must not appear, but similar names such as "psql" must.
-kept=$(printf '%s\n' "  9  100.0  0.0 ps" " 10   5.0  1.0 psql" " 11   2.0  1.0 bash" | exclude_ps_rows)
+kept=$(printf '%s\n' "  9  100.0  0.0 ps" " 10   5.0  1.0 psql" " 11   2.0  1.0 bash" | select_process_rows 10)
 awk '$4=="ps" {found=1} END {exit found}' <<< "$kept" && [[ "$kept" == *psql* && "$kept" == *bash* ]] && pass "Own ps row excluded, psql/bash kept" || fail "Own ps row excluded, psql/bash kept"
+# Regression (v1.1.1): on a busy machine ps output is large; the pipeline must still
+# succeed under pipefail (no SIGPIPE from stopping early). 5000 synthetic rows.
+( set -o pipefail; awk 'BEGIN{for(i=1;i<=5000;i++) printf "%d 1.0 1.0 proc%d\n", i, i}' \
+    | select_process_rows 3 | format_process_rows > /tmp/lsm_big.$$ )
+rc=$?; lines=$(wc -l < /tmp/lsm_big.$$); rm -f /tmp/lsm_big.$$
+[[ $rc -eq 0 && $lines -eq 4 ]] && pass "Large process list: pipeline succeeds, 3 rows kept" || fail "Large process list: pipeline succeeds (rc=$rc, lines=$lines)"
 get_top_memory_processes abc >/dev/null 2>&1
 rc=$?; [[ $rc -eq 2 ]] && pass "Invalid process count rejected" || fail "Invalid process count exit status"
 source "$ROOT/modules/alert_manager.sh"
