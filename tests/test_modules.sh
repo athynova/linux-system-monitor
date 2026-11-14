@@ -14,6 +14,10 @@ get_disk_metrics / | grep -q '^DISK_PERCENT=' && pass "Root disk metrics" || fai
 get_disk_metrics /no-such-mount-for-monitor-test >/dev/null 2>&1
 rc=$?; [[ $rc -eq 2 ]] && pass "Invalid mount rejected" || fail "Invalid mount exit status"
 source "$ROOT/modules/process_monitor.sh"
+# Release hygiene: the changelog must exist and describe the version being shipped.
+ver=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$ROOT/monitor.sh" | head -n1)
+[[ -s "$ROOT/CHANGELOG.md" ]] && pass "CHANGELOG.md is not empty" || fail "CHANGELOG.md is not empty"
+grep -qF "## [$ver]" "$ROOT/CHANGELOG.md" && pass "CHANGELOG.md has an entry for version $ver" || fail "CHANGELOG.md has an entry for version $ver"
 get_top_cpu_processes 3 | awk 'NR>1{n++} END{exit !(n>0 && n<=3)}' && pass "CPU process limit" || fail "CPU process limit"
 # Regression: command names containing spaces must not shift the numeric columns.
 rows=$(printf '%s\n' "  101  55.0  4.0 Web Content" "  102   1.0  0.1 bash" | format_process_rows)
