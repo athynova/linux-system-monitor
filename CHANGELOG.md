@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.1] - 2026-11-14
+### Fixed
+- `CHANGELOG.md` was empty in the v1.2.0 release (accidentally truncated while updating the docs); full history restored.
+
+### Testing
+- New release-hygiene checks: the changelog must be non-empty and have an entry for the version in `monitor.sh`.
+- Test plan records that all 9 suites passed on Linux Mint 22.3 for v1.2.0.
+
 ## [1.2.0] - 2026-11-14
 ### Added
 - Interactive terminal dashboard: `--dashboard`, `--refresh SECONDS`, `--frames N`, `--no-color`.
