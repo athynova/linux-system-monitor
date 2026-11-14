@@ -4,7 +4,7 @@
 set -uo pipefail
 DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 failed=()
-for t in test_modules test_config test_history test_shutdown test_edge_cases; do
+for t in test_modules test_config test_history test_shutdown test_edge_cases test_terminal test_dashboard test_controls test_interactive; do
     echo; echo "=== $t ==="
     bash "$DIR/$t.sh" || failed+=("$t")
 done

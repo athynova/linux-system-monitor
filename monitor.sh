@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -uo pipefail
-VERSION="1.1.2"
+VERSION="1.2.0"
 export LC_NUMERIC=C   # CSV and awk output must always use "." as the decimal separator
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$ROOT/config/monitor.conf"
 LOG_DIR="$ROOT/logs"; REPORT_DIR="$ROOT/reports"; EVENT_LOG="$LOG_DIR/monitor.log"
 DATA_DIR="$ROOT/data"; HISTORY_FILE="$DATA_DIR/history.csv"
 
-for name in system_info cpu_monitor memory_monitor disk_monitor process_monitor alert_manager report_manager history_manager; do
+for name in system_info cpu_monitor memory_monitor disk_monitor process_monitor alert_manager report_manager history_manager terminal dashboard; do
     f="$ROOT/modules/${name}.sh"
     [[ -r "$f" ]] || { echo "Error: Missing module $f" >&2; exit 1; }
     source "$f"
@@ -22,6 +22,10 @@ Usage: ./monitor.sh [options]
   --top NUMBER        Processes per list, 1-20 (default from config)
   --continuous        Repeat using MONITOR_INTERVAL from config
   --show-history N    Print the last N recorded history rows (1-1000) and exit
+  --dashboard         Live terminal dashboard (CPU and RAM bars with history)
+  --refresh SECONDS   Dashboard refresh interval, 0.2-60 (default 2)
+  --frames N          Dashboard: draw N frames then exit (for files, pipes, tests)
+  --no-color          Dashboard: plain text without colours
   --help              Show this help
   --version           Show the version
 Examples:
@@ -30,6 +34,7 @@ Examples:
   ./monitor.sh --mount /home
   ./monitor.sh --continuous
   ./monitor.sh --show-history 20
+  ./monitor.sh --dashboard --refresh 1
 EOF
 }
 error() { echo "Error: $1" >&2; exit 2; }
@@ -93,15 +98,16 @@ validate_config() {
 # point, logs the stop, and exits with 130 (INT) or 143 (TERM).
 SHUTDOWN_SIGNAL=""
 CYCLES_COMPLETED=0
+STOP_UNIT=cycle          # what the stop message counts ("cycle" or, for the dashboard, "frame")
 on_signal() { SHUTDOWN_SIGNAL=$1; }
 stop_requested() { [[ -n "$SHUTDOWN_SIGNAL" ]]; }
-cleanup() { rm -f -- "${HISTORY_FILE}.tmp.$$" 2>/dev/null; }
+cleanup() { term_leave 2>/dev/null; rm -f -- "${HISTORY_FILE}.tmp.$$" 2>/dev/null; }
 graceful_stop() {
     local code=130
     [[ "$SHUTDOWN_SIGNAL" == TERM ]] && code=143
-    printf '\nMonitor stopped by SIG%s after %d completed cycle(s).\n' "$SHUTDOWN_SIGNAL" "$CYCLES_COMPLETED" >&2
+    printf '\nMonitor stopped by SIG%s after %d completed %s(s).\n' "$SHUTDOWN_SIGNAL" "$CYCLES_COMPLETED" "$STOP_UNIT" >&2
     mkdir -p "$LOG_DIR" 2>/dev/null
-    printf '[%s] Monitor stopped by SIG%s. Cycles completed=%d\n' "$(date '+%F %T')" "$SHUTDOWN_SIGNAL" "$CYCLES_COMPLETED" >> "$EVENT_LOG" 2>/dev/null
+    printf '[%s] Monitor stopped by SIG%s. %ss completed=%d\n' "$(date '+%F %T')" "$SHUTDOWN_SIGNAL" "${STOP_UNIT^}" "$CYCLES_COMPLETED" >> "$EVENT_LOG" 2>/dev/null
     exit "$code"
 }
 # Sleep that a signal can interrupt immediately (plain "sleep" would delay the trap).
@@ -203,6 +209,7 @@ EOF
 }
 main() {
     local interval=1 mount=/ continuous=0 count="" show_history="" rc=0
+    local dashboard=0 refresh="" frames="" nocolor=0
     # Arguments are parsed first so --help works even if the config is broken.
     while (($#)); do
         case "$1" in
@@ -212,6 +219,10 @@ main() {
             --mount) (($#>=2)) || error "--mount needs a path"; mount=$2; shift 2 ;;
             --top) (($#>=2)) || error "--top needs a value"; count=$2; shift 2 ;;
             --continuous) continuous=1; shift ;;
+            --dashboard) dashboard=1; shift ;;
+            --refresh) (($#>=2)) || error "--refresh needs a value"; refresh=$2; shift 2 ;;
+            --frames) (($#>=2)) || error "--frames needs a value"; frames=$2; shift 2 ;;
+            --no-color) nocolor=1; shift ;;
             --show-history) (($#>=2)) || error "--show-history needs a value"; show_history=$2; shift 2 ;;
             *) error "Unknown option: $1 (use --help)" ;;
         esac
@@ -222,6 +233,19 @@ main() {
         history_show "$HISTORY_FILE" "$show_history"
         return $?
     fi
+    if ((dashboard)); then
+        ((continuous)) && error "--dashboard cannot be combined with --continuous."
+        [[ -z "$refresh" ]] && refresh=2
+        [[ "$refresh" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk -v r="$refresh" 'BEGIN { exit !(r >= 0.2 && r <= 60) }' || error "--refresh must be 0.2-60."
+        [[ -z "$frames" ]] && frames=0
+        [[ "$frames" == 0 || "$frames" =~ ^[1-9][0-9]{0,5}$ ]] || error "--frames must be a positive number."
+        [[ -t 1 || "$frames" -gt 0 ]] || error "The dashboard needs a terminal. Use --frames N to print N frames to a file or pipe."
+        ((nocolor)) && USE_COLOR=0
+        [[ -t 1 ]] || USE_COLOR=0
+        run_dashboard "$refresh" "$frames"
+        return $?
+    fi
+    [[ -z "$refresh$frames" && $nocolor -eq 0 ]] || error "--refresh, --frames and --no-color need --dashboard."
     [[ -n "$count" ]] || count=$TOP_PROCESS_COUNT
     [[ "$interval" =~ ^[1-9][0-9]*$ ]] && ((interval<=60)) || error "--interval must be 1-60."
     [[ "$count" =~ ^[1-9][0-9]*$ ]] && ((count<=20)) || error "--top must be 1-20."
