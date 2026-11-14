@@ -10,6 +10,10 @@ DASH_MEM_TOTAL=0; DASH_MEM_USED=0
 DASH_PREV_TOTAL=0; DASH_PREV_IDLE=0
 DASH_HOST=localhost
 DASH_STATE=LIVE
+DASH_PAUSED=0; DASH_HELP=0
+DASH_REFRESH_US=2000000   # DASH_REFRESH in microseconds
+DASH_DEADLINE=0           # when the next sample is due (microseconds since the epoch)
+DASH_KEY=""
 declare -a DASH_CPU_HIST=() DASH_RAM_HIST=()
 declare -a DASH_ALERTS=()
 declare -a DASH_DISKS=()      # "mount<TAB>percent<TAB>used_kib<TAB>total_kib"
@@ -214,6 +218,15 @@ dash_section_procs() {
     done
 }
 
+dash_section_help() {
+    printf ' %s\n' "$(paint bold "KEYS")"
+    printf '   %-10s %s\n' q "quit" p "pause / resume" c "sort processes by CPU" m "sort processes by memory" \
+        '+  or  =' "refresh faster" '-' "refresh slower" h "close this help"
+    printf '\n %s\n' "Bars: green = normal, yellow = within 20% of the threshold,"
+    printf ' %s\n' "red = at or above it. Thresholds come from config/monitor.conf."
+    printf ' %s\n' "Ctrl+C also quits."
+}
+
 dash_section_footer() {
     local w=$1 status
     if (( ${#DASH_ALERTS[@]} )); then
@@ -223,13 +236,14 @@ dash_section_footer() {
     fi
     printf ' %s\n' "$(dash_rule $((w - 1)))"
     printf ' Status: %s\n' "$status"
-    printf ' %s\n' "$(paint dim "Press Ctrl+C to quit")"
+    printf ' %s\n' "$(paint dim "q quit  p pause  c/m sort  +/- speed  h help")"
 }
 
 # dash_build_frame -> the whole frame as text, sized for the current terminal
 dash_build_frame() {
     local w=$(( TERM_COLS - 1 ))
     dash_section_header "$w"
+    if (( DASH_HELP )); then dash_section_help; dash_section_footer "$w"; return; fi
     dash_section_cpu "$w"
     dash_section_ram "$w"
     dash_section_disks "$w"
@@ -237,12 +251,71 @@ dash_build_frame() {
     dash_section_footer "$w"
 }
 
+# ---- keyboard ---------------------------------------------------------------------------
+
+# dash_set_refresh SECONDS: change the refresh interval; the next sample is due that long from now
+dash_set_refresh() {
+    DASH_REFRESH=$1
+    DASH_REFRESH_US=$(awk -v r="$1" 'BEGIN { printf "%d", r * 1000000 }')
+    DASH_DEADLINE=$(( ${EPOCHREALTIME/./} + DASH_REFRESH_US ))
+}
+
+# dash_step_refresh faster|slower: move to the next preset interval
+dash_step_refresh() {
+    local new
+    new=$(awk -v cur="$DASH_REFRESH" -v dir="$1" -v list="0.2 0.5 1 2 3 5 10 30 60" 'BEGIN {
+        n = split(list, a, " "); new = cur
+        if (dir == "faster") { for (i = n; i >= 1; i--) if (a[i] + 0 < cur + 0) { new = a[i]; break } }
+        else                 { for (i = 1; i <= n; i++) if (a[i] + 0 > cur + 0) { new = a[i]; break } }
+        print new }')
+    dash_set_refresh "$new"
+}
+
+# dash_wait_key SECONDS: wait for a key or the timeout; sets DASH_KEY ("" when none)
+dash_wait_key() {
+    local k rest rc
+    DASH_KEY=""
+    IFS= read -rsn1 -t "$1" k 2>/dev/null; rc=$?
+    if (( rc == 0 )); then
+        if [[ $k == $'\e' ]]; then IFS= read -rsn2 -t 0.01 rest 2>/dev/null; k=ESC; fi   # arrow keys etc: ignored
+        DASH_KEY=$k
+    elif (( rc == 1 )); then
+        interruptible_sleep "$1"        # no input available at all (EOF): still wait, never spin
+    fi                                  # rc > 128: timeout or a signal; the loop decides what to do
+    return 0
+}
+
+# dash_handle_key KEY: return 1 to quit, 0 to carry on
+dash_handle_key() {
+    case "$1" in
+        q|Q) return 1 ;;
+        p|P) if (( DASH_PAUSED )); then
+                 DASH_PAUSED=0; DASH_STATE=LIVE
+                 read_cpu_counters && { DASH_PREV_TOTAL=$CPU_TOTAL; DASH_PREV_IDLE=$CPU_IDLE; }   # no pause-long average
+                 dash_set_refresh "$DASH_REFRESH"
+             else
+                 DASH_PAUSED=1; DASH_STATE=PAUSED
+             fi ;;
+        c|C) DASH_SORT=cpu; dash_sample_procs ;;
+        m|M) DASH_SORT=mem; dash_sample_procs ;;
+        +|=) dash_step_refresh faster ;;
+        -|_) dash_step_refresh slower ;;
+        h|H|'?') DASH_HELP=$(( 1 - DASH_HELP )) ;;
+    esac
+    return 0
+}
+
 # ---- main loop ----------------------------------------------------------------------------
 
-# run_dashboard REFRESH FRAMES   (FRAMES=0 means run until stopped)
+dash_small_frame() {
+    printf ' Terminal too small: %dx%d\n Needs at least %dx%d.\n Resize the window, or press q to quit.\n' \
+        "$TERM_COLS" "$TERM_ROWS" "$TERM_MIN_COLS" "$TERM_MIN_ROWS"
+}
+
+# run_dashboard REFRESH FRAMES   (FRAMES=0 means run until quit or stopped)
 run_dashboard() {
-    DASH_REFRESH=$1
-    local max_frames=$2 frame_no=0 frame interactive=0
+    local max_frames=$2 frame_no=0 frame interactive=0 now wait_us wait_s
+    DASH_REFRESH=$1; DASH_PAUSED=0; DASH_HELP=0; DASH_STATE=LIVE
     [[ -t 1 ]] && interactive=1
     DASH_HOST=$(hostname 2>/dev/null) || DASH_HOST=localhost
     DASH_HOST=${DASH_HOST%%.*}
@@ -254,22 +327,42 @@ run_dashboard() {
     fi
     read_cpu_counters || { echo "Error: Cannot read /proc/stat." >&2; return 1; }
     DASH_PREV_TOTAL=$CPU_TOTAL; DASH_PREV_IDLE=$CPU_IDLE
-    (( interactive )) && term_enter
-    interruptible_sleep 0.25            # first frame needs a CPU delta to show
+    DASH_REFRESH_US=$(awk -v r="$DASH_REFRESH" 'BEGIN { printf "%d", r * 1000000 }')
+    DASH_DEADLINE=0
+    if (( interactive )); then
+        trap ':' WINCH                    # a resize interrupts the key wait, so we redraw at once
+        term_enter
+    fi
+    interruptible_sleep 0.25              # the first frame needs a CPU delta to show
     while true; do
         stop_requested && { term_leave; graceful_stop; }
-        dash_sample
-        frame=$(dash_build_frame)
-        frame_no=$((frame_no + 1)); CYCLES_COMPLETED=$frame_no
+        now=${EPOCHREALTIME/./}
+        if (( ! DASH_PAUSED && now >= DASH_DEADLINE )); then
+            dash_sample
+            DASH_DEADLINE=$(( now + DASH_REFRESH_US ))
+        fi
+        (( interactive )) && term_size
+        if (( interactive )) && ! term_big_enough; then frame=$(dash_small_frame); else frame=$(dash_build_frame); fi
+        frame_no=$(( frame_no + 1 )); CYCLES_COMPLETED=$frame_no
         if (( interactive )); then
             term_frame "$frame"
         else
             printf '=== frame %d ===\n%s\n' "$frame_no" "$frame"
         fi
         (( max_frames > 0 && frame_no >= max_frames )) && break
-        interruptible_sleep "$DASH_REFRESH"
+        if (( DASH_PAUSED )); then
+            wait_s=1
+        else
+            wait_us=$(( DASH_DEADLINE - ${EPOCHREALTIME/./} )); (( wait_us < 1000 )) && wait_us=1000
+            printf -v wait_s '%d.%06d' $(( wait_us / 1000000 )) $(( wait_us % 1000000 ))
+        fi
+        dash_wait_key "$wait_s"
         stop_requested && { term_leave; graceful_stop; }
+        if [[ -n "$DASH_KEY" ]]; then
+            dash_handle_key "$DASH_KEY" || break
+        fi
     done
+    (( interactive )) && trap - WINCH
     term_leave
     return 0
 }
