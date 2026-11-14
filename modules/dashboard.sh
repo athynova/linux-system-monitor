@@ -13,6 +13,7 @@ DASH_STATE=LIVE
 DASH_PAUSED=0; DASH_HELP=0
 DASH_REFRESH_US=2000000   # DASH_REFRESH in microseconds
 DASH_DEADLINE=0           # when the next sample is due (microseconds since the epoch)
+DASH_RESIZED=0            # set by the SIGWINCH trap
 DASH_KEY=""
 declare -a DASH_CPU_HIST=() DASH_RAM_HIST=()
 declare -a DASH_ALERTS=()
@@ -271,18 +272,30 @@ dash_step_refresh() {
     dash_set_refresh "$new"
 }
 
-# dash_wait_key SECONDS: wait for a key or the timeout; sets DASH_KEY ("" when none)
+# dash_wait_key SECONDS: wait for a key or the timeout; sets DASH_KEY ("" when none).
+# Bash's "read -t" is NOT interrupted by a trapped signal, so the wait is cut into slices
+# of at most 0.2 s and a stop request (Ctrl+C, kill) or a window resize is noticed between
+# slices. That keeps Ctrl+C and resizing responsive even with a 60 s refresh interval.
 dash_wait_key() {
-    local k rest rc
+    local k rest rc end now left slice s
     DASH_KEY=""
-    IFS= read -rsn1 -t "$1" k 2>/dev/null; rc=$?
-    if (( rc == 0 )); then
-        if [[ $k == $'\e' ]]; then IFS= read -rsn2 -t 0.01 rest 2>/dev/null; k=ESC; fi   # arrow keys etc: ignored
-        DASH_KEY=$k
-    elif (( rc == 1 )); then
-        interruptible_sleep "$1"        # no input available at all (EOF): still wait, never spin
-    fi                                  # rc > 128: timeout or a signal; the loop decides what to do
-    return 0
+    end=$(( ${EPOCHREALTIME/./} + $(awk -v s="$1" 'BEGIN { printf "%d", s * 1000000 }') ))
+    while :; do
+        stop_requested && return 0
+        (( DASH_RESIZED )) && return 0
+        now=${EPOCHREALTIME/./}; left=$(( end - now ))
+        (( left <= 0 )) && return 0
+        slice=$(( left > 200000 ? 200000 : left ))
+        printf -v s '%d.%06d' $(( slice / 1000000 )) $(( slice % 1000000 ))
+        IFS= read -rsn1 -t "$s" k 2>/dev/null; rc=$?
+        if (( rc == 0 )); then
+            if [[ $k == $'\e' ]]; then IFS= read -rsn2 -t 0.01 rest 2>/dev/null; k=ESC; fi   # arrow keys etc: ignored
+            DASH_KEY=$k
+            return 0
+        elif (( rc == 1 )); then
+            interruptible_sleep "$s"    # no input available at all (EOF): still wait, never spin
+        fi                              # rc > 128: this slice timed out; keep waiting
+    done
 }
 
 # dash_handle_key KEY: return 1 to quit, 0 to carry on
@@ -330,7 +343,7 @@ run_dashboard() {
     DASH_REFRESH_US=$(awk -v r="$DASH_REFRESH" 'BEGIN { printf "%d", r * 1000000 }')
     DASH_DEADLINE=0
     if (( interactive )); then
-        trap ':' WINCH                    # a resize interrupts the key wait, so we redraw at once
+        trap 'DASH_RESIZED=1' WINCH       # noticed between wait slices, so we redraw within 0.2 s
         term_enter
     fi
     interruptible_sleep 0.25              # the first frame needs a CPU delta to show
@@ -357,6 +370,7 @@ run_dashboard() {
             printf -v wait_s '%d.%06d' $(( wait_us / 1000000 )) $(( wait_us % 1000000 ))
         fi
         dash_wait_key "$wait_s"
+        DASH_RESIZED=0
         stop_requested && { term_leave; graceful_stop; }
         if [[ -n "$DASH_KEY" ]]; then
             dash_handle_key "$DASH_KEY" || break
