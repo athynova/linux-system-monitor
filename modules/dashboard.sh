@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+# Interactive terminal dashboard (v1.2): live CPU and RAM bars with history sparklines.
+# Rendering functions only print text; sampling functions only set DASH_* variables.
+# Needs terminal.sh, cpu_monitor.sh and memory_monitor.sh to be sourced first.
+
+DASH_REFRESH=2            # seconds between frames (may be fractional)
+DASH_HISTORY_MAX=120      # samples kept for the sparklines
+DASH_CPU=0; DASH_RAM=0
+DASH_MEM_TOTAL=0; DASH_MEM_USED=0
+DASH_PREV_TOTAL=0; DASH_PREV_IDLE=0
+DASH_HOST=localhost
+DASH_STATE=LIVE
+declare -a DASH_CPU_HIST=() DASH_RAM_HIST=()
+declare -a DASH_ALERTS=()
+
+# ---- pure rendering helpers ---------------------------------------------------------
+
+# dash_level PERCENT THRESHOLD -> ok | warn (>= 80% of threshold) | crit (>= threshold)
+dash_level() {
+    awk -v p="${1:-0}" -v t="${2:-100}" 'BEGIN { if (p >= t) print "crit"; else if (p >= t*0.8) print "warn"; else print "ok" }'
+}
+
+# dash_bar PERCENT WIDTH [LEVEL] -> a bar exactly WIDTH cells wide
+dash_bar() {
+    local pct=$1 width=$2 level=${3:-none} filled i full empty fill_s="" empty_s=""
+    filled=$(awk -v p="$pct" -v w="$width" 'BEGIN { p += 0; if (p < 0) p = 0; if (p > 100) p = 100; printf "%d", (p / 100 * w) + 0.5 }')
+    (( filled > width )) && filled=$width
+    if term_utf8; then full='█'; empty='░'; else full='#'; empty='-'; fi
+    for ((i = 0; i < filled; i++)); do fill_s+=$full; done
+    for ((i = filled; i < width; i++)); do empty_s+=$empty; done
+    paint "$level" "$fill_s"; paint dim "$empty_s"
+}
+
+# dash_spark WIDTH VALUES... -> sparkline of the last WIDTH values (0-100), newest on the right
+dash_spark() {
+    local width=$1; shift
+    local -a vals=("$@") glyphs
+    local n=${#vals[@]} start=0 i v idx out=""
+    if term_utf8; then glyphs=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █); else glyphs=(_ . - : = + '*' '#'); fi
+    (( n > width )) && start=$((n - width))
+    for ((i = start; i < n; i++)); do
+        v=${vals[i]%%.*}; [[ "$v" =~ ^[0-9]+$ ]] || v=0
+        idx=$(( v * 8 / 100 )); (( idx > 7 )) && idx=7
+        out+=${glyphs[idx]}
+    done
+    printf '%*s%s' $((width - (n - start))) '' "$out"
+}
+
+# dash_gib KIB -> "x.y" GiB using integer maths (no forks)
+dash_gib() { local t=$(( ${1:-0} * 10 / 1048576 )); printf '%d.%d' $((t / 10)) $((t % 10)); }
+
+# dash_rule -> a horizontal rule as wide as the usable area
+dash_rule() {
+    local w=$1 ch='-' out
+    term_utf8 && ch='─'
+    printf -v out '%*s' "$w" ''
+    printf '%s' "${out// /$ch}"
+}
+
+# dash_push ARRAY_NAME VALUE -> append and keep only the newest DASH_HISTORY_MAX values
+dash_push() {
+    local -n _dash_arr=$1          # unusual name: a caller's own variable can never clash with it
+    _dash_arr+=("$2")
+    (( ${#_dash_arr[@]} > DASH_HISTORY_MAX )) && _dash_arr=("${_dash_arr[@]: -DASH_HISTORY_MAX}")
+    return 0
+}
+
+# ---- sampling -------------------------------------------------------------------------
+
+# dash_sample_cpu: percent busy since the previous call (never blocks, unlike get_cpu_usage)
+dash_sample_cpu() {
+    local td id
+    read_cpu_counters || return 1
+    td=$((CPU_TOTAL - DASH_PREV_TOTAL)); id=$((CPU_IDLE - DASH_PREV_IDLE))
+    if (( td > 0 && id >= 0 && id <= td )); then
+        DASH_CPU=$(awk -v b="$((td - id))" -v t="$td" 'BEGIN { printf "%.2f", (b / t) * 100 }')
+    fi   # otherwise keep the previous value
+    DASH_PREV_TOTAL=$CPU_TOTAL; DASH_PREV_IDLE=$CPU_IDLE
+}
+
+dash_sample_mem() {
+    local out k v
+    out=$(get_memory_metrics) || return 1
+    while IFS== read -r k v; do
+        case $k in
+            MEM_TOTAL_KIB) DASH_MEM_TOTAL=$v ;;
+            MEM_USED_KIB)  DASH_MEM_USED=$v ;;
+            MEM_PERCENT)   DASH_RAM=$v ;;
+        esac
+    done <<< "$out"
+}
+
+# dash_sample: take one sample of everything and update histories and alerts
+dash_sample() {
+    dash_sample_cpu; dash_sample_mem
+    dash_push DASH_CPU_HIST "$DASH_CPU"; dash_push DASH_RAM_HIST "$DASH_RAM"
+    DASH_ALERTS=()
+    [[ $(dash_level "$DASH_CPU" "$CPU_THRESHOLD") == crit ]] && DASH_ALERTS+=("CPU ${DASH_CPU}% >= ${CPU_THRESHOLD}%")
+    [[ $(dash_level "$DASH_RAM" "$RAM_THRESHOLD") == crit ]] && DASH_ALERTS+=("RAM ${DASH_RAM}% >= ${RAM_THRESHOLD}%")
+    return 0
+}
+
+# ---- frame sections (each prints complete lines, none wider than $1 cells) ----------------
+
+dash_section_header() {
+    local w=$1 base right now room host="" left pad
+    printf -v now '%(%H:%M:%S)T' -1
+    base=" Linux System Monitor ${VERSION}"
+    right="${DASH_STATE}  refresh ${DASH_REFRESH}s  ${now} "
+    (( ${#base} + ${#right} + 1 > w )) && right="${DASH_STATE}  ${DASH_REFRESH}s  ${now} "   # narrow window
+    room=$(( w - ${#base} - ${#right} - 3 ))   # 2 spaces before the host + 1 minimum gap
+    (( room >= 3 )) && host="  ${DASH_HOST:0:room}"
+    left="$base$host"
+    pad=$(( w - ${#left} - ${#right} )); (( pad < 1 )) && pad=1
+    printf '%s%*s%s\n' "$(paint bold "$left")" "$pad" '' "$(paint info "$right")"
+    printf ' %s\n' "$(dash_rule $((w - 1)))"
+}
+
+# dash_meter LABEL PERCENT THRESHOLD EXTRA HISTORY_ARRAY_NAME WIDTH
+dash_meter() {
+    local label=$1 pct=$2 thr=$3 extra=$4 hist_name=$5 w=$6
+    local -n _dash_hist=$hist_name
+    local level suffix bw
+    level=$(dash_level "$pct" "$thr")
+    printf -v suffix ' %5.1f%%%s  thr %d%%' "$pct" "$extra" "$thr"
+    printf -v suffix '%-34s' "$suffix"          # fixed width so every bar lines up
+    bw=$(( w - 8 - ${#suffix} )); (( bw < 8 )) && bw=8
+    printf ' %-4s [%s]%s\n' "$label" "$(dash_bar "$pct" "$bw" "$level")" "$(paint "$level" "$suffix")"
+    printf '      %s\n' "$(paint info "$(dash_spark $((w - 7)) "${_dash_hist[@]}")")"
+}
+
+dash_section_cpu() { dash_meter CPU "$DASH_CPU" "$CPU_THRESHOLD" "" DASH_CPU_HIST "$1"; }
+dash_section_ram() {
+    dash_meter RAM "$DASH_RAM" "$RAM_THRESHOLD" "  $(dash_gib "$DASH_MEM_USED")/$(dash_gib "$DASH_MEM_TOTAL") GiB" DASH_RAM_HIST "$1"
+}
+
+dash_section_footer() {
+    local w=$1 status
+    if (( ${#DASH_ALERTS[@]} )); then
+        status=$(paint crit "WARNING: ${DASH_ALERTS[*]}")
+    else
+        status=$(paint ok "NORMAL")
+    fi
+    printf ' %s\n' "$(dash_rule $((w - 1)))"
+    printf ' Status: %s\n' "$status"
+    printf ' %s\n' "$(paint dim "Press Ctrl+C to quit")"
+}
+
+# dash_build_frame -> the whole frame as text, sized for the current terminal
+dash_build_frame() {
+    local w=$(( TERM_COLS - 1 ))
+    dash_section_header "$w"
+    dash_section_cpu "$w"
+    dash_section_ram "$w"
+    dash_section_footer "$w"
+}
+
+# ---- main loop ----------------------------------------------------------------------------
+
+# run_dashboard REFRESH FRAMES   (FRAMES=0 means run until stopped)
+run_dashboard() {
+    DASH_REFRESH=$1
+    local max_frames=$2 frame_no=0 frame interactive=0
+    [[ -t 1 ]] && interactive=1
+    DASH_HOST=$(hostname 2>/dev/null) || DASH_HOST=localhost
+    DASH_HOST=${DASH_HOST%%.*}
+    STOP_UNIT=frame
+    term_size
+    if (( interactive )) && ! term_big_enough; then
+        echo "Error: Terminal too small (${TERM_COLS}x${TERM_ROWS}); the dashboard needs at least ${TERM_MIN_COLS}x${TERM_MIN_ROWS}." >&2
+        return 2
+    fi
+    read_cpu_counters || { echo "Error: Cannot read /proc/stat." >&2; return 1; }
+    DASH_PREV_TOTAL=$CPU_TOTAL; DASH_PREV_IDLE=$CPU_IDLE
+    (( interactive )) && term_enter
+    interruptible_sleep 0.25            # first frame needs a CPU delta to show
+    while true; do
+        stop_requested && { term_leave; graceful_stop; }
+        dash_sample
+        frame=$(dash_build_frame)
+        frame_no=$((frame_no + 1)); CYCLES_COMPLETED=$frame_no
+        if (( interactive )); then
+            term_frame "$frame"
+        else
+            printf '=== frame %d ===\n%s\n' "$frame_no" "$frame"
+        fi
+        (( max_frames > 0 && frame_no >= max_frames )) && break
+        interruptible_sleep "$DASH_REFRESH"
+        stop_requested && { term_leave; graceful_stop; }
+    done
+    term_leave
+    return 0
+}
