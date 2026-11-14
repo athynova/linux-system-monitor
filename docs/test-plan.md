@@ -19,6 +19,10 @@ Run `./tests/run_all.sh` (all five suites), then run `./monitor.sh --interval 1 
 | INT-04 | Full monitoring cycle | Report displayed and saved |
 | INT-05 | Continuous mode | Repeated cycles until Ctrl+C |
 | UT-10 | Process name containing a space | Columns stay aligned (v1.1) |
+| UT-12 | Terminal helpers: size, UTF-8, colour switches, enter/leave, frame codes | `test_terminal.sh` |
+| DSH-01..67 | Dashboard bars, sparklines, levels, sampling, disk/process panels, layout at every size, CLI options | `test_dashboard.sh` (fake `df`/`ps`) |
+| KEY-01..32 | Key handling, refresh stepping, help, pause, EOF stdin | `test_controls.sh` |
+| PTY-01..21 | Real pseudo-terminal: screen/cursor/echo restored, colours, exit codes 0/130/143, prompt Ctrl+C and resize, too-small window | `test_interactive.sh` |
 | UT-11 | The monitor's own `ps` row | Excluded; `psql` and other names kept (v1.1.1) |
 | CFG-01..23 | Config parsing: CRLF, BOM, spaces, comments, bad/duplicate/unknown keys, range limits, `--help` with broken config | Accepted or rejected with a clear message (`test_config.sh`) |
 | HIS-01..30 | CSV header/rows, ISO timestamps, quoting, validation, trimming, `--show-history`, `HISTORY_ENABLED=false` | See `test_history.sh` |
@@ -36,6 +40,10 @@ Do not claim target-machine tests passed until you run them on Linux Mint 22.3 a
 | Full integration run | Passed on Linux Mint 22.3: report displayed and saved, history row recorded |
 | Continuous mode | Passed on Linux Mint 22.3: repeated cycles until Ctrl+C, 3 history rows written |
 | Report/log inspection | Pending target-machine execution |
+| Automated suites for v1.2 (`run_all.sh`, 9 suites, about 250 checks) | Pending: run on Linux Mint 22.3 and paste the result here |
+| Manual: dashboard looks right in the Mint terminal (colours, block characters, sparklines) | Pending |
+| Manual: drag the window smaller and larger while the dashboard runs | Pending |
+| Manual: Ctrl+C and `q` leave the terminal normal (cursor visible, typing echoes) | Pending |
 
 ## Additional manual checks
 ```bash
