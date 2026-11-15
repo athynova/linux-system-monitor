@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-VERSION="1.2.0"
+VERSION="1.2.1"
 export LC_NUMERIC=C   # CSV and awk output must always use "." as the decimal separator
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$ROOT/config/monitor.conf"
