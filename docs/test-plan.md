@@ -40,7 +40,7 @@ Do not claim target-machine tests passed until you run them on Linux Mint 22.3 a
 | Full integration run | Passed on Linux Mint 22.3: report displayed and saved, history row recorded |
 | Continuous mode | Passed on Linux Mint 22.3: repeated cycles until Ctrl+C, 3 history rows written |
 | Report/log inspection | Pending target-machine execution |
-| Automated suites for v1.2 (`run_all.sh`, 9 suites, about 250 checks) | Pending: run on Linux Mint 22.3 and paste the result here |
+| Automated suites for v1.2 (`run_all.sh`, 9 suites, about 250 checks) | v1.2.0: all 9 suites passed on Linux Mint 22.3 (14 Nov 2026), including the pseudo-terminal tests. v1.2.1: re-run pending |
 | Manual: dashboard looks right in the Mint terminal (colours, block characters, sparklines) | Pending |
 | Manual: drag the window smaller and larger while the dashboard runs | Pending |
 | Manual: Ctrl+C and `q` leave the terminal normal (cursor visible, typing echoes) | Pending |
